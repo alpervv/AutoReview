@@ -45,14 +45,18 @@ console = Console()
 # ---------------------------------------------------------------------------
 
 
+def _resolve_exe(name: str) -> list[str]:
+    """Return the command prefix needed to run a CLI tool on this platform.
+    On Windows, .cmd/.bat files must be invoked via 'cmd /c'."""
+    path = shutil.which(name) or name
+    if sys.platform == "win32" and path.lower().endswith((".cmd", ".bat")):
+        return ["cmd", "/c", path]
+    return [path]
+
+
 async def run_claude(prompt: str, cwd: Path) -> str:
     """Invoke the claude CLI and return the final response text (reasoning-free)."""
-    claude_exe = shutil.which("claude") or "claude"
-    cmd = [
-        claude_exe,
-        "--output-format", "json",
-        "-p", prompt,
-    ]
+    cmd = _resolve_exe("claude") + ["--output-format", "json", "-p", prompt]
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -101,20 +105,11 @@ async def run_codex(
     Invoke the codex CLI and return (response_text, session_id_if_found).
     If session_id is provided, continues that session.
     """
-    codex_exe = shutil.which("codex") or "codex"
+    base = _resolve_exe("codex") + ["--approval-mode", "full-auto"]
     if session_id:
-        cmd = [
-            codex_exe,
-            "--approval-mode", "full-auto",
-            "--session", session_id,
-            prompt,
-        ]
+        cmd = base + ["--session", session_id, prompt]
     else:
-        cmd = [
-            codex_exe,
-            "--approval-mode", "full-auto",
-            prompt,
-        ]
+        cmd = base + [prompt]
 
     try:
         proc = await asyncio.create_subprocess_exec(
