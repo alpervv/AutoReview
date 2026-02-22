@@ -6,6 +6,7 @@ Read-only analysis of a target codebase directory.
 import asyncio
 import json
 import re
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -46,8 +47,9 @@ console = Console()
 
 async def run_claude(prompt: str, cwd: Path) -> str:
     """Invoke the claude CLI and return the final response text (reasoning-free)."""
+    claude_exe = shutil.which("claude") or "claude"
     cmd = [
-        "claude",
+        claude_exe,
         "--output-format", "json",
         "-p", prompt,
     ]
@@ -99,16 +101,17 @@ async def run_codex(
     Invoke the codex CLI and return (response_text, session_id_if_found).
     If session_id is provided, continues that session.
     """
+    codex_exe = shutil.which("codex") or "codex"
     if session_id:
         cmd = [
-            "codex",
+            codex_exe,
             "--approval-mode", "full-auto",
             "--session", session_id,
             prompt,
         ]
     else:
         cmd = [
-            "codex",
+            codex_exe,
             "--approval-mode", "full-auto",
             prompt,
         ]
