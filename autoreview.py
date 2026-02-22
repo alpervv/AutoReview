@@ -6,6 +6,7 @@ Read-only analysis of a target codebase directory.
 import asyncio
 import json
 import re
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,8 @@ CROSS_REVIEW_CONTEXT = (
 
 ARBITRATION_CONTEXT = (
     "Here are 2 reports generated for the issue below. Determine which report is more accurate.\n"
+    "Return only a single character: 1 or 2.\n"
+    "Do not include any explanation, words, punctuation, or markdown.\n\n"
     "{user_prompt}\n\n"
     "--- Report 1 (Claude) ---\n"
     "{claude_report_2}\n\n"
@@ -44,13 +47,30 @@ console = Console()
 # ---------------------------------------------------------------------------
 
 
+def _resolve_exe(name: str) -> list[str]:
+    """Return the command prefix needed to run a CLI tool on this platform.
+    On Windows, .cmd/.bat files must be invoked via 'cmd /c'."""
+    if sys.platform == "win32":
+        # npm global bins often include multiple shims (e.g. `codex`, `codex.cmd`, `codex.ps1`).
+        # `shutil.which("codex")` may return the extensionless shim first, which cannot be
+        # executed directly by CreateProcess and raises WinError 193.
+        path = None
+        for candidate in (f"{name}.cmd", f"{name}.bat", f"{name}.exe", name):
+            path = shutil.which(candidate)
+            if path:
+                break
+        path = path or name
+    else:
+        path = shutil.which(name) or name
+
+    if sys.platform == "win32" and path.lower().endswith((".cmd", ".bat")):
+        return ["cmd", "/c", path]
+    return [path]
+
+
 async def run_claude(prompt: str, cwd: Path) -> str:
     """Invoke the claude CLI and return the final response text (reasoning-free)."""
-    cmd = [
-        "claude",
-        "--output-format", "json",
-        "-p", prompt,
-    ]
+    cmd = _resolve_exe("claude") + ["--output-format", "json", "-p", prompt]
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -99,28 +119,35 @@ async def run_codex(
     Invoke the codex CLI and return (response_text, session_id_if_found).
     If session_id is provided, continues that session.
     """
+    # codex-cli >=0.104 uses the non-interactive `exec` subcommand and `--full-auto`.
+    # Pass the prompt over stdin (`-`) to avoid Windows cmd.exe command-line length truncation,
+    # which can cut off large Stage 2/3 prompts and produce unrelated answers.
+    base = _resolve_exe("codex") + ["exec", "--full-auto", "--skip-git-repo-check", "-"]
     if session_id:
-        cmd = [
-            "codex",
-            "--approval-mode", "full-auto",
-            "--session", session_id,
-            prompt,
+        # Newer codex CLI resumes via `exec resume <session_id> <prompt>`.
+        cmd = _resolve_exe("codex") + [
+            "exec",
+            "resume",
+            "--full-auto",
+            "--skip-git-repo-check",
+            session_id,
+            "-",
         ]
     else:
-        cmd = [
-            "codex",
-            "--approval-mode", "full-auto",
-            prompt,
-        ]
+        cmd = base
 
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(cwd),
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=SUBPROCESS_TIMEOUT)
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(prompt.encode("utf-8")),
+            timeout=SUBPROCESS_TIMEOUT,
+        )
     except asyncio.TimeoutError:
         raise RuntimeError(f"Stage timed out after {SUBPROCESS_TIMEOUT}s (codex)")
 
@@ -185,6 +212,20 @@ def strip_reasoning_codex(raw: str) -> str:
 
     # If no assistant markers, return cleaned text as-is
     return cleaned.strip()
+
+
+def parse_arbitration_choice(raw: str) -> int:
+    """Parse Codex arbitration output and return 1 or 2."""
+    text = raw.strip()
+    if text in {"1", "2"}:
+        return int(text)
+
+    # Tolerate minor format drift like "Report 2" or "2." while keeping the contract strict.
+    match = re.search(r"\b([12])\b", text)
+    if match:
+        return int(match.group(1))
+
+    raise RuntimeError(f"Stage 3 returned invalid arbitration choice: {text!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +335,9 @@ async def run_pipeline(user_prompt: str, cwd: Path) -> None:
         )
         arb_result = await run_codex(arbitration_prompt, cwd, session_id=None)
 
-    supreme_report, _ = arb_result
+    arbitration_response, _ = arb_result
+    winner = parse_arbitration_choice(arbitration_response)
+    supreme_report = claude_report_2 if winner == 1 else codex_report_2_text
 
     if not supreme_report.strip():
         raise RuntimeError("Stage 3 returned an empty supreme report")
