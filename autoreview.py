@@ -49,7 +49,6 @@ async def run_claude(prompt: str, cwd: Path) -> str:
     cmd = [
         "claude",
         "--output-format", "json",
-        "--no-permissions-prompt",
         "-p", prompt,
     ]
     try:
