@@ -215,9 +215,10 @@ def build_arbitration_prompt(
 # ---------------------------------------------------------------------------
 
 
-def save_report(cwd: Path, user_prompt: str, supreme_report: str) -> Path:
+def save_report(cwd: Path, user_prompt: str, supreme_report: str, timestamp: datetime | None = None) -> Path:
     """Write review_YYYYMMDD_HHMMSS.md to cwd and return the path."""
-    timestamp = datetime.now()
+    if timestamp is None:
+        timestamp = datetime.now()
     filename = f"review_{timestamp.strftime('%Y%m%d_%H%M%S')}.md"
     output_path = cwd / filename
 
@@ -228,6 +229,41 @@ def save_report(cwd: Path, user_prompt: str, supreme_report: str) -> Path:
         "---\n\n"
         "## Supreme Report\n\n"
         f"{supreme_report}\n"
+    )
+
+    output_path.write_text(content, encoding="utf-8")
+    return output_path
+
+
+def save_all_reports(
+    cwd: Path,
+    user_prompt: str,
+    claude_report_1: str,
+    codex_report_1: str,
+    claude_report_2: str,
+    codex_report_2: str,
+    timestamp: datetime,
+) -> Path:
+    """Write review_YYYYMMDD_HHMMSS_all.md containing all 4 intermediate reports."""
+    filename = f"review_{timestamp.strftime('%Y%m%d_%H%M%S')}_all.md"
+    output_path = cwd / filename
+
+    content = (
+        "# AutoReview — All Reports\n\n"
+        f"**Date:** {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"**Query:** {user_prompt}\n\n"
+        "---\n\n"
+        "## Stage 1 — Claude (Initial)\n\n"
+        f"{claude_report_1}\n\n"
+        "---\n\n"
+        "## Stage 1 — Codex (Initial)\n\n"
+        f"{codex_report_1}\n\n"
+        "---\n\n"
+        "## Stage 2 — Claude (Cross-Review)\n\n"
+        f"{claude_report_2}\n\n"
+        "---\n\n"
+        "## Stage 2 — Codex (Cross-Review)\n\n"
+        f"{codex_report_2}\n"
     )
 
     output_path.write_text(content, encoding="utf-8")
@@ -300,8 +336,16 @@ async def run_pipeline(user_prompt: str, cwd: Path) -> None:
         raise RuntimeError("Stage 3 returned an empty supreme report")
 
     # --- Save ---
-    report_path = save_report(cwd, user_prompt, supreme_report)
-    console.print(f"\n[bold green]Report saved:[/bold green] {report_path}")
+    timestamp = datetime.now()
+    report_path = save_report(cwd, user_prompt, supreme_report, timestamp)
+    all_path = save_all_reports(
+        cwd, user_prompt,
+        claude_report_1, codex_response_1,
+        claude_report_2, codex_report_2_text,
+        timestamp,
+    )
+    console.print(f"\n[bold green]Supreme report:[/bold green] {report_path}")
+    console.print(f"[bold green]All reports:   [/bold green] {all_path}")
 
 
 # ---------------------------------------------------------------------------
